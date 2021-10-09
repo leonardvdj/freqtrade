@@ -109,6 +109,7 @@ class FreqtradeBot(LoggingMixin):
         """
         self.rpc.send_msg({
             'type': RPCMessageType.STATUS,
+            'stake_currency': self.config['stake_currency'],
             'status': msg
         })
 
