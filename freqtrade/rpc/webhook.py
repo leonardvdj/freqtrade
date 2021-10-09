@@ -54,6 +54,10 @@ class Webhook(RPCHandler):
                 valuedict = self._config['webhook'].get('webhookbuyfill', None)
             elif msg['type'] == RPCMessageType.SELL:
                 valuedict = self._config['webhook'].get('webhooksell', None)
+                msg['duration'] = msg['close_date'].replace(
+                    microsecond=0) - msg['open_date'].replace(microsecond=0)
+                msg['duration_min'] = msg['duration'].total_seconds() / 60
+                msg['emoji'] = self._get_sell_emoji(msg)
             elif msg['type'] == RPCMessageType.SELL_FILL:
                 valuedict = self._config['webhook'].get('webhooksellfill', None)
             elif msg['type'] == RPCMessageType.SELL_CANCEL:
@@ -73,6 +77,20 @@ class Webhook(RPCHandler):
         except KeyError as exc:
             logger.exception("Problem calling Webhook. Please check your webhook configuration. "
                              "Exception: %s", exc)
+
+    def _get_sell_emoji(self, msg):
+        """
+        Get emoji for sell-side
+        """
+
+        if float(msg['profit_ratio']) >= 0.05:
+            return "\N{ROCKET}"
+        elif float(msg['profit_ratio']) >= 0.0:
+            return "\N{EIGHT SPOKED ASTERISK}"
+        elif msg['sell_reason'] == "stop_loss":
+            return"\N{WARNING SIGN}"
+        else:
+            return "\N{CROSS MARK}"
 
     def _send_msg(self, payload: dict) -> None:
         """do the actual call to the webhook"""

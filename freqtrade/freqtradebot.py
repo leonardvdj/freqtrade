@@ -600,6 +600,7 @@ class FreqtradeBot(LoggingMixin):
         """
         msg = {
             'trade_id': trade.id,
+            'strategy': trade.strategy,
             'type': RPCMessageType.BUY,
             'buy_tag': trade.buy_tag,
             'exchange': self.exchange.name.capitalize(),
@@ -1170,6 +1171,7 @@ class FreqtradeBot(LoggingMixin):
             'type': (RPCMessageType.SELL_FILL if fill
                      else RPCMessageType.SELL),
             'trade_id': trade.id,
+            'strategy': trade.strategy,
             'exchange': trade.exchange.capitalize(),
             'pair': trade.pair,
             'gain': gain,
