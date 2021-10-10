@@ -48,16 +48,36 @@ class Webhook(RPCHandler):
 
             if msg['type'] == RPCMessageType.BUY:
                 valuedict = self._config['webhook'].get('webhookbuy', None)
+
+                msg['total_stake'] = "{stake_amount} {stake_currency}".format(**msg)
+                if (self._rpc._fiat_converter):
+                    msg['total_fiat_amount'] = self._rpc._fiat_converter.convert_amount(
+                        msg['stake_amount'], msg['stake_currency'], msg['fiat_currency'])
+                    msg['total_fiat'] = ', {total_fiat_amount} {fiat_currency}'.format(**msg)
+                else:
+                    msg['total_fiat'] = ''
+
             elif msg['type'] == RPCMessageType.BUY_CANCEL:
                 valuedict = self._config['webhook'].get('webhookbuycancel', None)
             elif msg['type'] == RPCMessageType.BUY_FILL:
                 valuedict = self._config['webhook'].get('webhookbuyfill', None)
             elif msg['type'] == RPCMessageType.SELL:
                 valuedict = self._config['webhook'].get('webhooksell', None)
+
                 msg['duration'] = msg['close_date'].replace(
                     microsecond=0) - msg['open_date'].replace(microsecond=0)
                 msg['duration_min'] = msg['duration'].total_seconds() / 60
+
                 msg['emoji'] = self._get_sell_emoji(msg)
+
+                if (all(prop in msg for prop in ['gain', 'fiat_currency', 'stake_currency'])
+                        and self._rpc._fiat_converter):
+                    msg['profit_fiat'] = self._rpc._fiat_converter.convert_amount(
+                        msg['profit_amount'], msg['stake_currency'], msg['fiat_currency'])
+                    msg['profit_extra'] = (' ({gain}: {profit_amount:.8f} {stake_currency}'
+                                           ' / {profit_fiat:.3f} {fiat_currency})').format(**msg)
+                else:
+                    msg['profit_extra'] = ''
             elif msg['type'] == RPCMessageType.SELL_FILL:
                 valuedict = self._config['webhook'].get('webhooksellfill', None)
             elif msg['type'] == RPCMessageType.SELL_CANCEL:

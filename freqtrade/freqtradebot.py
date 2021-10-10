@@ -109,6 +109,7 @@ class FreqtradeBot(LoggingMixin):
         """
         self.rpc.send_msg({
             'type': RPCMessageType.STATUS,
+            'strategy': self.config['strategy'],
             'stake_currency': self.config['stake_currency'],
             'status': msg
         })
@@ -202,6 +203,8 @@ class FreqtradeBot(LoggingMixin):
         if len(open_trades) != 0:
             msg = {
                 'type': RPCMessageType.WARNING,
+                'strategy': self.config['strategy'],
+                'stake_currency': self.config['stake_currency'],
                 'status':  f"{len(open_trades)} open trades active.\n\n"
                            f"Handle these trades manually on {self.exchange.name}, "
                            f"or '/start' the bot again and use '/stopbuy' "
@@ -627,6 +630,7 @@ class FreqtradeBot(LoggingMixin):
 
         msg = {
             'trade_id': trade.id,
+            'strategy': trade.strategy,
             'type': RPCMessageType.BUY_CANCEL,
             'buy_tag': trade.buy_tag,
             'exchange': self.exchange.name.capitalize(),
@@ -648,6 +652,7 @@ class FreqtradeBot(LoggingMixin):
     def _notify_enter_fill(self, trade: Trade) -> None:
         msg = {
             'trade_id': trade.id,
+            'strategy': trade.strategy,
             'type': RPCMessageType.BUY_FILL,
             'buy_tag': trade.buy_tag,
             'exchange': self.exchange.name.capitalize(),
@@ -1216,6 +1221,7 @@ class FreqtradeBot(LoggingMixin):
 
         msg = {
             'type': RPCMessageType.SELL_CANCEL,
+            'strategy': trade.strategy,
             'trade_id': trade.id,
             'exchange': trade.exchange.capitalize(),
             'pair': trade.pair,
@@ -1306,13 +1312,21 @@ class FreqtradeBot(LoggingMixin):
     def handle_protections(self, pair: str) -> None:
         prot_trig = self.protections.stop_per_pair(pair)
         if prot_trig:
-            msg = {'type': RPCMessageType.PROTECTION_TRIGGER, }
+            msg = {
+                'type': RPCMessageType.PROTECTION_TRIGGER,
+                'strategy': self.config['strategy'],
+                'stake_currency': self.config['stake_currency']
+            }
             msg.update(prot_trig.to_json())
             self.rpc.send_msg(msg)
 
         prot_trig_glb = self.protections.global_stop()
         if prot_trig_glb:
-            msg = {'type': RPCMessageType.PROTECTION_TRIGGER_GLOBAL, }
+            msg = {
+                'type': RPCMessageType.PROTECTION_TRIGGER_GLOBAL,
+                'strategy': self.config['strategy'],
+                'stake_currency': self.config['stake_currency']
+            }
             msg.update(prot_trig_glb.to_json())
             self.rpc.send_msg(msg)
 

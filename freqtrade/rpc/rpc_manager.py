@@ -71,6 +71,8 @@ class RPCManager:
         if config['dry_run']:
             self.send_msg({
                 'type': RPCMessageType.WARNING,
+                'strategy': config['strategy'],
+                'stake_currency': config['stake_currency'],
                 'status': 'Dry run is enabled. All trades are simulated.'
             })
         stake_currency = config['stake_currency']
@@ -83,6 +85,8 @@ class RPCManager:
         strategy_name = config.get('strategy', '')
         self.send_msg({
             'type': RPCMessageType.STARTUP,
+                'strategy': config['strategy'],
+                'stake_currency': config['stake_currency'],
             'status': f'*Exchange:* `{exchange_name}`\n'
                       f'*Stake per trade:* `{stake_amount} {stake_currency}`\n'
                       f'*Minimum ROI:* `{minimal_roi}`\n'
@@ -92,6 +96,8 @@ class RPCManager:
         })
         self.send_msg({
             'type': RPCMessageType.STARTUP,
+                'strategy': config['strategy'],
+                'stake_currency': config['stake_currency'],
             'status': f'Searching for {stake_currency} pairs to buy and sell '
                       f'based on {pairlist.short_desc()}'
         })
@@ -99,5 +105,7 @@ class RPCManager:
             prots = '\n'.join([p for prot in protections.short_desc() for k, p in prot.items()])
             self.send_msg({
                 'type': RPCMessageType.STARTUP,
+                'strategy': config['strategy'],
+                'stake_currency': config['stake_currency'],
                 'status': f'Using Protections: \n{prots}'
             })
