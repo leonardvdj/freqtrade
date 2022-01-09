@@ -44,6 +44,7 @@ SELL_IDX = 4
 LOW_IDX = 5
 HIGH_IDX = 6
 BUY_TAG_IDX = 7
+EXIT_TAG_IDX = 8
 
 
 class Backtesting:
@@ -66,7 +67,7 @@ class Backtesting:
         self.all_results: Dict[str, Dict] = {}
 
         self.exchange = ExchangeResolver.load_exchange(self.config['exchange']['name'], self.config)
-        self.dataprovider = DataProvider(self.config, None)
+        self.dataprovider = DataProvider(self.config, self.exchange)
 
         if self.config.get('strategy_list', None):
             for strat in list(self.config['strategy_list']):
@@ -88,7 +89,8 @@ class Backtesting:
         self.init_backtest_detail()
         self.pairlists = PairListManager(self.exchange, self.config)
         if 'VolumePairList' in self.pairlists.name_list:
-            raise OperationalException("VolumePairList not allowed for backtesting.")
+            raise OperationalException("VolumePairList not allowed for backtesting. "
+                                       "Please use StaticPairlist instead.")
         if 'PerformanceFilter' in self.pairlists.name_list:
             raise OperationalException("PerformanceFilter not allowed for backtesting.")
 
@@ -244,32 +246,38 @@ class Backtesting:
         Helper function to convert a processed dataframes into lists for performance reasons.
 
         Used by backtest() - so keep this optimized for performance.
+
+        :param processed: a processed dictionary with format {pair, data}, which gets cleared to
+        optimize memory usage!
         """
         # Every change to this headers list must evaluate further usages of the resulting tuple
         # and eventually change the constants for indexes at the top
-        headers = ['date', 'buy', 'open', 'close', 'sell', 'low', 'high', 'buy_tag']
+        headers = ['date', 'buy', 'open', 'close', 'sell', 'low', 'high', 'buy_tag', 'exit_tag']
         data: Dict = {}
         self.progress.init_step(BacktestState.CONVERT, len(processed))
 
         # Create dict with data
-        for pair, pair_data in processed.items():
+        for pair in processed.keys():
+            pair_data = processed[pair]
             self.check_abort()
             self.progress.increment()
             if not pair_data.empty:
                 pair_data.loc[:, 'buy'] = 0  # cleanup if buy_signal is exist
                 pair_data.loc[:, 'sell'] = 0  # cleanup if sell_signal is exist
                 pair_data.loc[:, 'buy_tag'] = None  # cleanup if buy_tag is exist
+                pair_data.loc[:, 'exit_tag'] = None  # cleanup if exit_tag is exist
 
             df_analyzed = self.strategy.advise_sell(
                 self.strategy.advise_buy(pair_data, {'pair': pair}), {'pair': pair}).copy()
             # Trim startup period from analyzed dataframe
-            df_analyzed = trim_dataframe(df_analyzed, self.timerange,
-                                         startup_candles=self.required_startup)
+            df_analyzed = processed[pair] = pair_data = trim_dataframe(
+                df_analyzed, self.timerange, startup_candles=self.required_startup)
             # To avoid using data from future, we use buy/sell signals shifted
             # from the previous candle
             df_analyzed.loc[:, 'buy'] = df_analyzed.loc[:, 'buy'].shift(1)
             df_analyzed.loc[:, 'sell'] = df_analyzed.loc[:, 'sell'].shift(1)
             df_analyzed.loc[:, 'buy_tag'] = df_analyzed.loc[:, 'buy_tag'].shift(1)
+            df_analyzed.loc[:, 'exit_tag'] = df_analyzed.loc[:, 'exit_tag'].shift(1)
 
             # Update dataprovider cache
             self.dataprovider._set_cached_df(pair, self.timeframe, df_analyzed)
@@ -312,7 +320,9 @@ class Backtesting:
                     # Worst case: price ticks tiny bit above open and dives down.
                     stop_rate = sell_row[OPEN_IDX] * (1 - abs(trade.stop_loss_pct))
                     assert stop_rate < sell_row[HIGH_IDX]
-                return stop_rate
+                # Limit lower-end to candle low to avoid sells below the low.
+                # This still remains "worst case" - but "worst realistic case".
+                return max(sell_row[LOW_IDX], stop_rate)
 
             # Set close_rate to stoploss
             return trade.stop_loss
@@ -336,10 +346,7 @@ class Backtesting:
                     # use Open rate if open_rate > calculated sell rate
                     return sell_row[OPEN_IDX]
 
-                # Use the maximum between close_rate and low as we
-                # cannot sell outside of a candle.
-                # Applies when a new ROI setting comes in place and the whole candle is above that.
-                return min(max(close_rate, sell_row[LOW_IDX]), sell_row[HIGH_IDX])
+                return close_rate
 
             else:
                 # This should not be reached...
@@ -357,9 +364,20 @@ class Backtesting:
 
         if sell.sell_flag:
             trade.close_date = sell_candle_time
-            trade.sell_reason = sell.sell_reason
+
             trade_dur = int((trade.close_date_utc - trade.open_date_utc).total_seconds() // 60)
             closerate = self._get_close_rate(sell_row, trade, sell, trade_dur)
+            # call the custom exit price,with default value as previous closerate
+            current_profit = trade.calc_profit_ratio(closerate)
+            if sell.sell_type in (SellType.SELL_SIGNAL, SellType.CUSTOM_SELL):
+                # Custom exit pricing only for sell-signals
+                closerate = strategy_safe_wrapper(self.strategy.custom_exit_price,
+                                                  default_retval=closerate)(
+                    pair=trade.pair, trade=trade,
+                    current_time=sell_row[DATE_IDX],
+                    proposed_rate=closerate, current_profit=current_profit)
+            # Use the maximum between close_rate and low as we cannot sell outside of a candle.
+            closerate = min(max(closerate, sell_row[LOW_IDX]), sell_row[HIGH_IDX])
 
             # Confirm trade exit:
             time_in_force = self.strategy.order_time_in_force['sell']
@@ -370,6 +388,17 @@ class Backtesting:
                     sell_reason=sell.sell_reason,
                     current_time=sell_candle_time):
                 return None
+
+            trade.sell_reason = sell.sell_reason
+
+            # Checks and adds an exit tag, after checking that the length of the
+            # sell_row has the length for an exit tag column
+            if(
+                len(sell_row) > EXIT_TAG_IDX
+                and sell_row[EXIT_TAG_IDX] is not None
+                and len(sell_row[EXIT_TAG_IDX]) > 0
+            ):
+                trade.sell_reason = sell_row[EXIT_TAG_IDX]
 
             trade.close(closerate, show_msg=False)
             return trade
@@ -385,13 +414,15 @@ class Backtesting:
             detail_data = detail_data.loc[
                 (detail_data['date'] >= sell_candle_time) &
                 (detail_data['date'] < sell_candle_end)
-             ].copy()
+            ].copy()
             if len(detail_data) == 0:
                 # Fall back to "regular" data if no detail data was found for this candle
                 return self._get_sell_trade_entry_for_candle(trade, sell_row)
             detail_data.loc[:, 'buy'] = sell_row[BUY_IDX]
             detail_data.loc[:, 'sell'] = sell_row[SELL_IDX]
-            headers = ['date', 'buy', 'open', 'close', 'sell', 'low', 'high']
+            detail_data.loc[:, 'buy_tag'] = sell_row[BUY_TAG_IDX]
+            detail_data.loc[:, 'exit_tag'] = sell_row[EXIT_TAG_IDX]
+            headers = ['date', 'buy', 'open', 'close', 'sell', 'low', 'high', 'buy_tag', 'exit_tag']
             for det_row in detail_data[headers].values.tolist():
                 res = self._get_sell_trade_entry_for_candle(trade, det_row)
                 if res:
@@ -407,15 +438,23 @@ class Backtesting:
             stake_amount = self.wallets.get_trade_stake_amount(pair, None)
         except DependencyException:
             return None
+        # let's call the custom entry price, using the open price as default price
+        propose_rate = strategy_safe_wrapper(self.strategy.custom_entry_price,
+                                             default_retval=row[OPEN_IDX])(
+            pair=pair, current_time=row[DATE_IDX].to_pydatetime(),
+            proposed_rate=row[OPEN_IDX])  # default value is the open rate
 
-        min_stake_amount = self.exchange.get_min_pair_stake_amount(pair, row[OPEN_IDX], -0.05) or 0
+        # Move rate to within the candle's low/high rate
+        propose_rate = min(max(propose_rate, row[LOW_IDX]), row[HIGH_IDX])
+
+        min_stake_amount = self.exchange.get_min_pair_stake_amount(pair, propose_rate, -0.05) or 0
         max_stake_amount = self.wallets.get_available_stake_amount()
 
         stake_amount = strategy_safe_wrapper(self.strategy.custom_stake_amount,
                                              default_retval=stake_amount)(
-            pair=pair, current_time=row[DATE_IDX].to_pydatetime(), current_rate=row[OPEN_IDX],
+            pair=pair, current_time=row[DATE_IDX].to_pydatetime(), current_rate=propose_rate,
             proposed_stake=stake_amount, min_stake=min_stake_amount, max_stake=max_stake_amount)
-        stake_amount = self.wallets._validate_stake_amount(pair, stake_amount, min_stake_amount)
+        stake_amount = self.wallets.validate_stake_amount(pair, stake_amount, min_stake_amount)
 
         if not stake_amount:
             return None
@@ -424,7 +463,7 @@ class Backtesting:
         time_in_force = self.strategy.order_time_in_force['sell']
         # Confirm trade entry:
         if not strategy_safe_wrapper(self.strategy.confirm_trade_entry, default_retval=True)(
-                pair=pair, order_type=order_type, amount=stake_amount, rate=row[OPEN_IDX],
+                pair=pair, order_type=order_type, amount=stake_amount, rate=propose_rate,
                 time_in_force=time_in_force, current_time=row[DATE_IDX].to_pydatetime()):
             return None
 
@@ -433,10 +472,10 @@ class Backtesting:
             has_buy_tag = len(row) >= BUY_TAG_IDX + 1
             trade = LocalTrade(
                 pair=pair,
-                open_rate=row[OPEN_IDX],
+                open_rate=propose_rate,
                 open_date=row[DATE_IDX].to_pydatetime(),
                 stake_amount=stake_amount,
-                amount=round(stake_amount / row[OPEN_IDX], 8),
+                amount=round(stake_amount / propose_rate, 8),
                 fee_open=self.fee,
                 fee_close=self.fee,
                 is_open=True,
@@ -486,7 +525,8 @@ class Backtesting:
         Of course try to not have ugly code. By some accessor are sometime slower than functions.
         Avoid extensive logging in this method and functions it calls.
 
-        :param processed: a processed dictionary with format {pair, data}
+        :param processed: a processed dictionary with format {pair, data}, which gets cleared to
+        optimize memory usage!
         :param start_date: backtesting timerange start datetime
         :param end_date: backtesting timerange end datetime
         :param max_open_trades: maximum number of concurrent trades, <= 0 means unlimited

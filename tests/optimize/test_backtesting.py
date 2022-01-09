@@ -1,6 +1,7 @@
 # pragma pylint: disable=missing-docstring, W0212, line-too-long, C0103, unused-argument
 
 import random
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock
@@ -438,7 +439,8 @@ def test_backtesting_no_pair_left(default_conf, mocker, caplog, testdatadir) -> 
         Backtesting(default_conf)
 
     default_conf['pairlists'] = [{"method": "VolumePairList", "number_assets": 5}]
-    with pytest.raises(OperationalException, match='VolumePairList not allowed for backtesting.'):
+    with pytest.raises(OperationalException,
+                       match=r'VolumePairList not allowed for backtesting\..*StaticPairlist.*'):
         Backtesting(default_conf)
 
     default_conf.update({
@@ -470,7 +472,8 @@ def test_backtesting_pairlist_list(default_conf, mocker, caplog, testdatadir, ti
     default_conf['timerange'] = '20180101-20180102'
 
     default_conf['pairlists'] = [{"method": "VolumePairList", "number_assets": 5}]
-    with pytest.raises(OperationalException, match='VolumePairList not allowed for backtesting.'):
+    with pytest.raises(OperationalException,
+                       match=r'VolumePairList not allowed for backtesting\..*StaticPairlist.*'):
         Backtesting(default_conf)
 
     default_conf['pairlists'] = [{"method": "StaticPairList"}, {"method": "PerformanceFilter"}]
@@ -567,6 +570,7 @@ def test_backtest__get_sell_trade_entry(default_conf, fee, mocker) -> None:
         195,  # Low
         201.5,  # High
         '',  # Buy Signal Name
+        '',  # Exit Signal Name
     ]
 
     trade = backtesting._enter_trade(pair, row=row)
@@ -581,26 +585,27 @@ def test_backtest__get_sell_trade_entry(default_conf, fee, mocker) -> None:
         195,  # Low
         210.5,  # High
         '',  # Buy Signal Name
+        '',  # Exit Signal Name
     ]
     row_detail = pd.DataFrame(
         [
             [
                 pd.Timestamp(year=2020, month=1, day=1, hour=5, minute=0, tzinfo=timezone.utc),
-                1, 200, 199, 0, 197, 200.1, '',
+                1, 200, 199, 0, 197, 200.1, '', '',
             ], [
                 pd.Timestamp(year=2020, month=1, day=1, hour=5, minute=1, tzinfo=timezone.utc),
-                0, 199, 199.5, 0, 199, 199.7, '',
+                0, 199, 199.5, 0, 199, 199.7, '', '',
             ], [
                 pd.Timestamp(year=2020, month=1, day=1, hour=5, minute=2, tzinfo=timezone.utc),
-                0, 199.5, 200.5, 0, 199, 200.8, '',
+                0, 199.5, 200.5, 0, 199, 200.8, '', '',
             ], [
                 pd.Timestamp(year=2020, month=1, day=1, hour=5, minute=3, tzinfo=timezone.utc),
-                0, 200.5, 210.5, 0, 193, 210.5, '',  # ROI sell (?)
+                0, 200.5, 210.5, 0, 193, 210.5, '', '',  # ROI sell (?)
             ], [
                 pd.Timestamp(year=2020, month=1, day=1, hour=5, minute=4, tzinfo=timezone.utc),
-                0, 200, 199, 0, 193, 200.1, '',
+                0, 200, 199, 0, 193, 200.1, '', '',
             ],
-        ], columns=["date", "buy", "open", "close", "sell", "low", "high", "buy_tag"]
+        ], columns=["date", "buy", "open", "close", "sell", "low", "high", "buy_tag", "exit_tag"]
     )
 
     # No data available.
@@ -614,7 +619,7 @@ def test_backtest__get_sell_trade_entry(default_conf, fee, mocker) -> None:
     assert isinstance(trade, LocalTrade)
     # Assign empty ... no result.
     backtesting.detail_data[pair] = pd.DataFrame(
-        [], columns=["date", "buy", "open", "close", "sell", "low", "high", "buy_tag"])
+        [], columns=["date", "buy", "open", "close", "sell", "low", "high", "buy_tag", "exit_tag"])
 
     res = backtesting._get_sell_trade_entry(trade, row)
     assert res is None
@@ -644,7 +649,7 @@ def test_backtest_one(default_conf, fee, mocker, testdatadir) -> None:
     processed = backtesting.strategy.advise_all_indicators(data)
     min_date, max_date = get_timerange(processed)
     result = backtesting.backtest(
-        processed=processed,
+        processed=deepcopy(processed),
         start_date=min_date,
         end_date=max_date,
         max_open_trades=10,
@@ -678,7 +683,7 @@ def test_backtest_one(default_conf, fee, mocker, testdatadir) -> None:
          'min_rate': [0.10370188, 0.10300000000000001],
          'max_rate': [0.10501, 0.1038888],
          'is_open': [False, False],
-         'buy_tag': [None, None],
+         'buy_tag': [None, None]
          })
     pd.testing.assert_frame_equal(results, expected)
     data_pair = processed[pair]
@@ -883,7 +888,7 @@ def test_backtest_multi_pair(default_conf, fee, mocker, tres, pair, testdatadir)
     processed = backtesting.strategy.advise_all_indicators(data)
     min_date, max_date = get_timerange(processed)
     backtest_conf = {
-        'processed': processed,
+        'processed': deepcopy(processed),
         'start_date': min_date,
         'end_date': max_date,
         'max_open_trades': 3,
@@ -905,7 +910,7 @@ def test_backtest_multi_pair(default_conf, fee, mocker, tres, pair, testdatadir)
         'NXT/BTC', '5m')[0]) == len(data['NXT/BTC']) - 1 - backtesting.strategy.startup_candle_count
 
     backtest_conf = {
-        'processed': processed,
+        'processed': deepcopy(processed),
         'start_date': min_date,
         'end_date': max_date,
         'max_open_trades': 1,
@@ -1102,6 +1107,7 @@ def test_backtest_start_multi_strat_nomock(default_conf, mocker, caplog, testdat
         '--timerange', '1510694220-1510700340',
         '--enable-position-stacking',
         '--disable-max-market-positions',
+        '--breakdown', 'day',
         '--strategy-list',
         'StrategyTestV2',
         'TestStrategyLegacyV1',
@@ -1130,6 +1136,7 @@ def test_backtest_start_multi_strat_nomock(default_conf, mocker, caplog, testdat
     captured = capsys.readouterr()
     assert 'BACKTESTING REPORT' in captured.out
     assert 'SELL REASON STATS' in captured.out
+    assert 'DAY BREAKDOWN' in captured.out
     assert 'LEFT OPEN TRADES REPORT' in captured.out
     assert '2017-11-14 21:17:00 -> 2017-11-14 22:58:00 | Max open trades : 1' in captured.out
     assert 'STRATEGY SUMMARY' in captured.out
